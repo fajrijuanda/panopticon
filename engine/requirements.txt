@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+python-socketio
+chromadb
+requests
+numpy
+pydantic
+openpyxl
