@@ -196,8 +196,6 @@ def process_social_interactions(engine):
     This does not require standing on the exact same tile.
     """
     mode = str(getattr(engine, "social_mode", SOCIAL_MODE)).lower()
-    if mode == "full_llm":
-        return
 
     _ensure_runtime_maps(engine)
     rng = getattr(engine, "world_rng", np.random)
@@ -220,9 +218,15 @@ def process_social_interactions(engine):
             avg_sociability = (a.personality.sociability + b.personality.sociability) / 2.0
             avg_empathy = (a.personality.empathy + b.personality.empathy) / 2.0
 
+            # Social vitals always recover from proximity, regardless of mode
             social_boost = 6.0 + (closeness * 9.0) + (max(0.0, avg_sociability) * 2.0)
             a.vitals.social = min(100.0, a.vitals.social + social_boost)
             b.vitals.social = min(100.0, b.vitals.social + social_boost)
+
+            # In full_llm mode, skip detailed relationship/event processing
+            if mode == "full_llm":
+                continue
+
 
             old_rel = get_relationship(engine, a.id, b.id)
             rel_change = 1.0 + (closeness * 1.8) + (avg_kindness * 1.2) + (avg_empathy * 0.8) + (max(0.0, avg_sociability) * 0.6)

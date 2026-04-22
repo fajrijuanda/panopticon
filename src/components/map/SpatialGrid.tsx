@@ -89,6 +89,8 @@ export function SpatialGrid() {
       details: string;
       ownerName: string;
       baseColor: string;
+      current: number;
+      capacity: number;
     }> = [];
 
     for (const agent of Object.values(agents)) {
@@ -109,16 +111,20 @@ export function SpatialGrid() {
           : agent.inventory.chicken >= agent.inventory.pig + agent.inventory.cow
             ? "Flock"
             : "Herd";
+        const radius = Math.max(2, Math.min(10, Math.ceil(Math.sqrt(livestockTotal * 1.25)) + (baseHouse ? 1 : 0)));
+        const capacity = radius * radius;
 
         zones.push({
           id: `livestock-${agent.id}`,
           x: livestockAnchorX,
           y: livestockAnchorY,
-          radius: Math.max(2, Math.min(10, Math.ceil(Math.sqrt(livestockTotal * 1.25)) + (baseHouse ? 1 : 0))),
+          radius,
           label,
-          details: `${agent.inventory.chicken} chicken, ${agent.inventory.pig} pig, ${agent.inventory.cow} cow`,
+          details: `${agent.inventory.chicken} 🐓, ${agent.inventory.pig} 🐖, ${agent.inventory.cow} 🐄`,
           ownerName: agent.name,
           baseColor: ownerColor,
+          current: livestockTotal,
+          capacity,
         });
       }
 
@@ -126,16 +132,20 @@ export function SpatialGrid() {
       if (farmTotal > 0) {
         const farmAnchorX = anchorX ?? agent.farm_origin_x ?? agent.x;
         const farmAnchorY = anchorY ?? agent.farm_origin_y ?? agent.y;
+        const radius = Math.max(2, Math.min(10, Math.ceil(Math.sqrt(farmTotal * 1.1)) + (baseHouse ? 1 : 0)));
+        const capacity = radius * radius;
 
         zones.push({
           id: `farm-${agent.id}`,
           x: farmAnchorX,
           y: farmAnchorY,
-          radius: Math.max(2, Math.min(10, Math.ceil(Math.sqrt(farmTotal * 1.1)) + (baseHouse ? 1 : 0))),
+          radius,
           label: "Farm",
-          details: `${agent.inventory.crop} crop, ${agent.inventory.fruit} fruit`,
+          details: `${agent.inventory.crop} 🌾 crop, ${agent.inventory.fruit} 🍎 fruit`,
           ownerName: agent.name,
           baseColor: ownerColor,
+          current: farmTotal,
+          capacity,
         });
       }
     }
@@ -490,10 +500,10 @@ export function SpatialGrid() {
                 >
                   {settlement.territory_radius > 0 && (
                     <div
-                      className="absolute rounded-full border"
+                      className="absolute border-2 border-dashed"
                       style={{
-                        width: `${(settlement.territory_radius * 2 / gridSize) * MAP_RENDER_SIZE}px`,
-                        height: `${(settlement.territory_radius * 2 / gridSize) * MAP_RENDER_SIZE}px`,
+                        width: `${((settlement.territory_radius * 2 + 1) / gridSize) * MAP_RENDER_SIZE}px`,
+                        height: `${((settlement.territory_radius * 2 + 1) / gridSize) * MAP_RENDER_SIZE}px`,
                         top: "50%",
                         left: "50%",
                         transform: "translate(-50%, -50%)",
@@ -552,10 +562,10 @@ export function SpatialGrid() {
                 >
                   {house.territory_radius > 0 && (
                     <div
-                      className="absolute rounded-full border-2"
+                      className="absolute border-2 border-dashed"
                       style={{
-                        width: `${(house.territory_radius * 2 / gridSize) * MAP_RENDER_SIZE}px`,
-                        height: `${(house.territory_radius * 2 / gridSize) * MAP_RENDER_SIZE}px`,
+                        width: `${((house.territory_radius * 2 + 1) / gridSize) * MAP_RENDER_SIZE}px`,
+                        height: `${((house.territory_radius * 2 + 1) / gridSize) * MAP_RENDER_SIZE}px`,
                         top: "50%",
                         left: "50%",
                         transform: "translate(-50%, -50%)",
@@ -572,9 +582,12 @@ export function SpatialGrid() {
           {productionZones.map((zone) => {
             const topPos = toCellPercent(zone.y);
             const leftPos = toCellPercent(zone.x);
-            const diameter = (zone.radius * 2 / gridSize) * MAP_RENDER_SIZE;
+            const side = ((zone.radius * 2 + 1) / gridSize) * MAP_RENDER_SIZE;
             const borderColor = withAlpha(zone.baseColor, 0.55);
             const fillColor = withAlpha(zone.baseColor, 0.14);
+            const isOverCapacity = zone.current >= zone.capacity;
+            const upgradeCostWood = zone.radius + 1;
+            const upgradeCostCoin = Math.max(0, zone.radius - 1);
 
             return (
               <div
@@ -586,10 +599,12 @@ export function SpatialGrid() {
                     x: e.clientX,
                     y: e.clientY,
                     lines: [
-                      `${zone.label} area: ${zone.ownerName}`,
+                      `${zone.label} — ${zone.ownerName}`,
                       `Coord: (${zone.x}, ${zone.y})`,
-                      `Radius: ${zone.radius}`,
+                      `Area: ${zone.radius * 2 + 1}×${zone.radius * 2 + 1} tiles (radius ${zone.radius})`,
+                      `Capacity: ${zone.current}/${zone.capacity}${isOverCapacity ? " ⚠️ FULL" : ""}`,
                       zone.details,
+                      `Expand cost: ${upgradeCostWood} wood, ${upgradeCostCoin} coin`,
                     ],
                   });
                 }}
@@ -597,10 +612,10 @@ export function SpatialGrid() {
                 onMouseLeave={() => setHoverTooltip(null)}
               >
                 <div
-                  className="absolute rounded-full border border-dashed"
+                  className="absolute border border-dashed"
                   style={{
-                    width: `${diameter}px`,
-                    height: `${diameter}px`,
+                    width: `${side}px`,
+                    height: `${side}px`,
                     top: "50%",
                     left: "50%",
                     transform: "translate(-50%, -50%)",
@@ -609,14 +624,14 @@ export function SpatialGrid() {
                   }}
                 />
                 <span
-                  className="absolute -top-2 -left-2 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider shadow-sm border"
+                  className="absolute -top-2 -left-2 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider shadow-sm border whitespace-nowrap"
                   style={{
                     backgroundColor: withAlpha(zone.baseColor, 0.18),
                     color: zone.baseColor,
                     borderColor: withAlpha(zone.baseColor, 0.35),
                   }}
                 >
-                  {zone.label === "Farm" ? "🌾" : zone.label === "Flock" ? "🐓" : zone.label === "Herd" ? "🐖" : "🐄"} {zone.label}
+                  {zone.label === "Farm" ? "🌾" : zone.label === "Flock" ? "🐓" : zone.label === "Herd" ? "🐖" : "🐄"} {zone.label} {zone.current}/{zone.capacity}
                 </span>
               </div>
             );

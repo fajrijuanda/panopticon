@@ -3685,16 +3685,16 @@ class SpatialEngine:
         if owned:
 
             # Expansion intent: spend resources to widen influence.
+            # Scaling cost: bigger territory = more expensive to expand.
+            wood_cost = owned.territory_radius + 1
+            coin_cost = max(0, owned.territory_radius - 2)
+            near_settlement = abs(agent.x - owned.x) + abs(agent.y - owned.y) <= 2
+            can_afford = agent.inventory.wood >= wood_cost and agent.inventory.coin >= coin_cost
 
-            if abs(agent.x - owned.x) + abs(agent.y - owned.y) <= 2 and (agent.inventory.wood >= 4 or agent.inventory.stone >= 3):
+            if near_settlement and can_afford and owned.territory_radius < 12:
 
-                if agent.inventory.wood >= 4:
-
-                    agent.inventory.wood -= 4
-
-                elif agent.inventory.stone >= 3:
-
-                    agent.inventory.stone -= 3
+                agent.inventory.wood -= wood_cost
+                agent.inventory.coin -= coin_cost
 
                 owned.territory_radius = min(12, owned.territory_radius + 1)
 
@@ -3706,7 +3706,7 @@ class SpatialEngine:
 
                 self.gain_skill(agent, "diplomacy", 0.3)
 
-                self.add_log(LogCategoryEnum.SOCIAL, f"ðŸ³ï¸ {agent.name} expanded territory to radius {owned.territory_radius}.")
+                self.add_log(LogCategoryEnum.SOCIAL, f"Expanded: {agent.name} territory now radius {owned.territory_radius} (cost: {wood_cost} wood, {coin_cost} coin).")
 
             return
 
@@ -4881,11 +4881,15 @@ class SpatialEngine:
 
 
 
-            # House energy bonus
+            # House energy bonus: reduce drain AND actively recover
 
             if self._is_near_home(agent, radius=2):
 
                 energy_drain *= 0.3  # Resting at home
+
+                if agent.dx == 0 and agent.dy == 0:
+
+                    agent.vitals.energy = min(100.0, agent.vitals.energy + 4.5)  # Active resting recovery
 
 
 
@@ -5153,13 +5157,42 @@ class SpatialEngine:
 
                 has_feed = agent.inventory.crop > 0 or agent.inventory.fruit > 0
 
-                owns_settlement = self._owned_settlement(agent.id) is not None
+                owned_sett = self._owned_settlement(agent.id)
+                owned_hs = self._owned_house(agent)
+                has_livestock_base = owned_sett is not None or owned_hs is not None
 
-                owns_house = self._owned_house(agent) is not None
+                # Capacity based on territory radius (radius^2)
+                livestock_radius = max(2, int(getattr(owned_sett, 'territory_radius', 0)) if owned_sett else 2)
+                if owned_hs and owned_hs.territory_radius > 0:
+                    livestock_radius = max(livestock_radius, owned_hs.territory_radius)
+                max_livestock_capacity = livestock_radius * livestock_radius
 
-                has_livestock_base = owns_settlement or owns_house
+                # Auto-harvest overflow: when livestock exceeds capacity, cull excess into food
+                if total_livestock > max_livestock_capacity and has_livestock_base:
+                    overflow = total_livestock - max_livestock_capacity
+                    harvested_food = 0
+                    while overflow > 0:
+                        if agent.inventory.chicken > 0:
+                            agent.inventory.chicken -= 1
+                            agent.inventory.food += 2
+                            harvested_food += 2
+                        elif agent.inventory.pig > 0:
+                            agent.inventory.pig -= 1
+                            agent.inventory.food += 4
+                            harvested_food += 4
+                        elif agent.inventory.cow > 0:
+                            agent.inventory.cow -= 1
+                            agent.inventory.food += 6
+                            harvested_food += 6
+                        else:
+                            break
+                        overflow -= 1
+                    if harvested_food > 0:
+                        self.add_log(LogCategoryEnum.ECONOMY, f"Harvest: {agent.name} culled excess livestock for {harvested_food} food (capacity: {max_livestock_capacity}).")
+                    total_livestock = agent.inventory.pig + agent.inventory.cow + agent.inventory.chicken
 
-                if total_livestock > 0 and has_feed and has_livestock_base and (self.tick % 6 == 0 or self.world_rng.random() < 0.18):
+                # Breeding: only if under capacity
+                if total_livestock > 0 and total_livestock < max_livestock_capacity and has_feed and has_livestock_base and (self.tick % 6 == 0 or self.world_rng.random() < 0.18):
 
                     if agent.inventory.crop > 0:
 
@@ -5177,7 +5210,7 @@ class SpatialEngine:
 
                         agent.inventory.chicken += 1
 
-                        self.add_log(LogCategoryEnum.ECONOMY, f"🐣 {agent.name}'s flock grew by 1 chicken.")
+                        self.add_log(LogCategoryEnum.ECONOMY, f"Flock grew: {agent.name}'s flock grew by 1 chicken ({total_livestock + 1}/{max_livestock_capacity}).")
 
                         self._remember_production_origin(agent, "livestock")
 
@@ -5185,7 +5218,7 @@ class SpatialEngine:
 
                         agent.inventory.pig += 1
 
-                        self.add_log(LogCategoryEnum.ECONOMY, f"🐖 {agent.name} expanded their pig herd.")
+                        self.add_log(LogCategoryEnum.ECONOMY, f"Herd grew: {agent.name} expanded pig herd ({total_livestock + 1}/{max_livestock_capacity}).")
 
                         self._remember_production_origin(agent, "livestock")
 
@@ -5193,13 +5226,14 @@ class SpatialEngine:
 
                         agent.inventory.cow += 1
 
-                        self.add_log(LogCategoryEnum.ECONOMY, f"🐄 {agent.name} expanded their cattle herd.")
+                        self.add_log(LogCategoryEnum.ECONOMY, f"Herd grew: {agent.name} expanded cattle herd ({total_livestock + 1}/{max_livestock_capacity}).")
 
                         self._remember_production_origin(agent, "livestock")
 
                     self.gain_skill(agent, "farming", 0.7)
 
                     self.gain_skill(agent, "gathering", 0.3)
+
 
                 
 
@@ -5212,24 +5246,21 @@ class SpatialEngine:
 
 
                 # Farming expansion: farmers can open new land for fields/orchards around their own settlement.
+                # Scaling cost: bigger territory = more resources needed.
 
                 owned_settlement = self._owned_settlement(agent.id)
 
                 if job == "Farmer" and owned_settlement:
 
                     near_settlement = abs(agent.x - owned_settlement.x) + abs(agent.y - owned_settlement.y) <= max(2, owned_settlement.territory_radius)
-
-                    can_prepare_land = farming_skill >= 28 and near_settlement and (agent.inventory.wood >= 2 or agent.inventory.stone >= 1)
+                    expand_wood_cost = owned_settlement.territory_radius + 1
+                    expand_coin_cost = max(0, owned_settlement.territory_radius - 2)
+                    can_prepare_land = farming_skill >= 28 and near_settlement and agent.inventory.wood >= expand_wood_cost and agent.inventory.coin >= expand_coin_cost
 
                     if can_prepare_land and (self.tick % 6 == 0 or self.world_rng.random() < 0.35):
 
-                        if agent.inventory.wood >= 2:
-
-                            agent.inventory.wood -= 2
-
-                        if agent.inventory.stone >= 1 and self.world_rng.random() < 0.55:
-
-                            agent.inventory.stone -= 1
+                        agent.inventory.wood -= expand_wood_cost
+                        agent.inventory.coin -= expand_coin_cost
 
                         owned_settlement.is_farming = True
 
@@ -5239,7 +5270,7 @@ class SpatialEngine:
 
                         self.gain_skill(agent, "farming", 1.0)
 
-                        self.add_log(LogCategoryEnum.SOCIAL, f"🌾 {agent.name} opened farmland around {owned_settlement.name or 'their settlement'}.")
+                        self.add_log(LogCategoryEnum.SOCIAL, f"Farmland expanded: {agent.name} expanded farmland around {owned_settlement.name or 'their settlement'} (cost: {expand_wood_cost} wood, {expand_coin_cost} coin).")
 
                 
 
@@ -5565,11 +5596,13 @@ class SpatialEngine:
 
                 if self._is_near_home(agent, radius=1):
 
-                    agent.vitals.energy = min(100.0, agent.vitals.energy + 2.8)
+                    agent.vitals.energy = min(100.0, agent.vitals.energy + 5.5)
 
                     agent.vitals.happiness = min(100.0, agent.vitals.happiness + 0.45)
 
                 else:
+
+                    agent.vitals.energy = min(100.0, agent.vitals.energy + 0.8)
 
                     agent.vitals.happiness = max(0.0, agent.vitals.happiness - 0.2)
 
@@ -5855,12 +5888,11 @@ class SpatialEngine:
 
                     self.think_turn_cursor = (self.think_turn_cursor + len(selected)) % max(1, len(eligible_order))
 
-        # Hybrid mode keeps proximity-based social simulation;
-        # full_llm mode delegates social outcomes to LLM-triggered actions.
+        # Proximity-based social vitals recovery runs in ALL modes.
+        # Detailed event/relationship processing is skipped internally for full_llm.
+        social.process_social_interactions(self)
 
         if self.social_mode != "full_llm":
-
-            social.process_social_interactions(self)
 
             # Marriage (automatic only in hybrid mode)
 
